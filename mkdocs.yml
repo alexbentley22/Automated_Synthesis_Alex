@@ -1,0 +1,31 @@
+site_name: My Docs
+site_url: https://dylanwal.github.io/PolyBot/
+
+theme:
+    name: material
+    features:
+        - navigation.tabs
+        - navigation.sections
+        - toc.integrate
+    logo: img/logo.png
+
+markdown_extensions:
+- toc:
+    baselevel: 1
+    toc_depth: 3
+    permalink: True
+- pymdownx.highlight
+- pymdownx.superfences
+- pymdownx.caret
+- pymdownx.tilde
+
+nav:
+    - Home:
+        - README.md
+    - PolyBot:
+        - test.md
+        - test2.md
+
+
+extra_css:
+  - stylesheets/extra.css
