@@ -1,3 +1,0 @@
-
-# Harvard Pumps
-data sheet
