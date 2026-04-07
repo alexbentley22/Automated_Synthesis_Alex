@@ -1,39 +1,72 @@
 """
-This code is for the Teledyne Isco pump syringe pump.
+This code is for the Teledyne Isco syringe pump.
 
+Overview
+--------
+- Documents the **frame format** and a minimal polling approach for discovering
+  active pumps on a multidrop bus.
+- Includes helpers to compute the line **checksum** and to **normalize** numeric strings.
+- The example implementation targets a **MicroPython** environment (UART/Pin),
+  and is currently commented out so it can serve as a reference.
 
+Protocol (as documented below)
+------------------------------
+All communication begins with a leading [CR] (carriage return).
+Each frame has the form:
+
+    destination \ acknowledgement \ message_source \ length \ message \ checksum \ [CR]
+
+Fields:
+- destination       : 1-digit unit ID of the instrument to receive the message
+- acknowledgement   : one character
+                      'E' → error (controller should resend immediately)
+                      'B' → busy (controller should resend at next polling)
+                      'R' → message received / acknowledgement
+- message_source    : unit ID of the sender (use ' ' if not applicable)
+- length            : 2-digit length of 'message' (00 encodes 256)
+- message           : up to 256 ASCII characters
+- checksum          : 2-digit hexadecimal (see 'add_checksum' below)
+                      → Sum the ASCII values of *all* characters except the checksum itself
+                        (including spaces); then take 256 - (sum % 256),
+                        and encode that result as two hex digits (high nibble, low nibble).
+- [CR]              : carriage return terminator
+
+Notes
+-----
+- Example bit/ASCII conversions:
+    65 = int(b'1000001', 2)     # bit → decimal
+    'A' = chr(65)               # decimal → ASCII
+
+The MicroPython example code (UART polling, checksum, etc.) is included below
+as commented reference.
 """
 
+# -----------------------------------------------------------------------------
+# MicroPython reference implementation 
+# -----------------------------------------------------------------------------
 # """
 #
-# all communication starts with [CR] (carriage return)
-# respond time: within 200 ms
-# frame = destination\acknowledgement\message source\length\message\checksum\[CR]
-#     destination      | 1-digit unit identification number of the instrument to receive the message
-#     acknowledgement  | one character
-#             E: error, resend the message immediately - network controller only
-#             B: busy, resend message at next polling
-#             R: message recived
-#     message source   | unit ID of the unit that originated the message (if no message, add 'space')
-#     length           | length of the message in 2 digit Maximum length is 256, with 256 being represented by a 00.
-#     message          | area where the actual information is located. The maximum length is 256 characters long.
-#     checksum         | a 2 digit hexadecimal number
-#             all characters are converted to the ASCII equivalent and added, except for the checksum. (include space)
-#     [CR]             |
-#
-# bit to decmial
-# 65 = int(b'1000001',2)
-# decmial to ascii
-# 'A' = chr(65)
-#
-#
-# """
 # from machine import UART, Pin
 # from utime import ticks_ms, sleep
 # import ubinascii
 #
 #
 # def timeout_read(_uart, timeout_ms=20):
+#     """
+#     Read from UART with a simple timeout, returning bytes read so far.
+#
+#     Parameters
+#     ----------
+#     _uart : UART
+#         Initialized MicroPython UART instance.
+#     timeout_ms : int
+#         Timeout window in milliseconds since the last received byte.
+#
+#     Returns
+#     -------
+#     bytes
+#         Bytes read until no new data arrives within timeout_ms.
+#     """
 #     now = ticks_ms()
 #     value = b''
 #     while True:
@@ -47,22 +80,36 @@ This code is for the Teledyne Isco pump syringe pump.
 #
 # def polling(_uart):
 #     """
-#     This function is to determine what controls we have acess to.
-#     para: _uart: uart object
-#     return: active: list with active pump ids
+#     Probe the bus to determine which pump IDs are active/responding.
+#
+#     Parameters
+#     ----------
+#     _uart : UART
+#         UART transport to the pump network.
+#
+#     Returns
+#     -------
+#     list[int]
+#         List of active pump IDs (1-based) that replied during polling.
+#
+#     Notes
+#     -----
+#     - Each pump is probed up to 3 times.
+#     - The first message on the network should begin with a leading [CR].
+#     - The sample shows a direct test message '\r1R5D\r' used for bring-up.
 #     """
 #     active = []
-#     for i in range(2):  # looping over pump
+#     for i in range(2):  # looping over pump IDs (1..2) as an example
 #         responce = 0
-#         for ii in range(3):  # giving each pump 3 attempts to reply
+#         for ii in range(3):  # retry per ID
 #             message = str(i + 1) + "R"  # destination + acknowledgement
 #             message = add_checksum(message)
 #             message = message + '\r'
 #
-#             if i == 0:  # A [CR] must start the network.
+#             if i == 0:  # The network requires an initial leading [CR]
 #                 message = '\r' + message
 #
-#             # ping pump
+#             # NOTE: bring-up test message used here:
 #             message = '\r1R5D\r'
 #             print(message)
 #             _uart.write(message)
@@ -81,7 +128,17 @@ This code is for the Teledyne Isco pump syringe pump.
 #
 # def num_to_hex(n):
 #     """
-#     Given a number between 0-15 return sting of hexaecimal
+#     Encode a nibble (0..15) as a single uppercase hexadecimal character.
+#
+#     Parameters
+#     ----------
+#     n : int
+#         Value in [0..15].
+#
+#     Returns
+#     -------
+#     str
+#         One-character hex digit ('0'..'9','A'..'F'), or "error" if out-of-range.
 #     """
 #     if n < 0:
 #         return "error"
@@ -106,8 +163,26 @@ This code is for the Teledyne Isco pump syringe pump.
 #
 # def add_checksum(message_in):
 #     """
-#     Given a message the check sum will be added to the end the
-#     message + checksum will be returned
+#     Calculate and append the 2-digit hex checksum to the payload.
+#
+#     Protocol
+#     --------
+#     - Sum the ASCII values of ALL characters in 'message_in' (including spaces).
+#     - Compute `checksum_dec = 256 - (sum % 256)`.
+#     - Convert that value into two hexadecimal digits:
+#           high = checksum_dec // 16
+#           low  = checksum_dec % 16
+#     - Append as uppercase hex characters to the original message.
+#
+#     Parameters
+#     ----------
+#     message_in : str
+#         Message portion of the frame (excluding checksum and CR).
+#
+#     Returns
+#     -------
+#     str
+#         message_in + checksum_hex (2 chars)
 #     """
 #     dec_list = [int(ubinascii.hexlify(i), 16) for i in message_in]
 #     checksum_dec = 256 - sum(dec_list) % 256
@@ -117,6 +192,13 @@ This code is for the Teledyne Isco pump syringe pump.
 #
 #
 # def main():
+#     """
+#     Minimal bring-up:
+#     - Open UART0 @ 9600 8N0
+#     - Poll pumps
+#     - Persist discovered IDs to 'comm.txt'
+#     - (Skeleton for sending a single message)
+#     """
 #     file = open("comm.txt", "a")
 #
 #     # Setup
@@ -132,16 +214,14 @@ This code is for the Teledyne Isco pump syringe pump.
 #
 #     file.close()
 #
-#     # sending a message
-#
-#
-# #     message = 'R'
-# #     message = add_checksum(message)
-# #     message = message + '\r'
-# #     uart.write(message)
-# #     reply = uart.read()
-# #     print(reply)
+#     # Example message send (commented)
+#     # message = 'R'
+#     # message = add_checksum(message)
+#     # message = message + '\r'
+#     # uart.write(message)
+#     # reply = uart.read()
+#     # print(reply)
 #
 # if __name__ == "__main__":
 #     main()
-#
+# """

@@ -6,6 +6,22 @@ import logging
 
 
 class SerialConnection(serial.Serial):
+    """
+    Thin wrapper over `serial.Serial` to create a connection with
+    the typical settings used by Harvard pumps and log creation.
+
+    Settings
+    --------
+    - baudrate = 9600
+    - stopbits = 2
+    - timeout  = 2 s
+
+    Behavior
+    --------
+    - Flushes output and input buffers immediately after opening,
+      which helps avoid stale bytes on initial communications.
+    - Logs the port used for traceability.
+    """
     def __init__(self, port):
         serial.Serial.__init__(self, port=port, baudrate=9600, stopbits=2, timeout=2)
         self.flushOutput()
@@ -14,10 +30,26 @@ class SerialConnection(serial.Serial):
 
 
 class PumpError(Exception):
+    """Domain-specific exception for pump errors (timeouts, bad replies, out-of-range settings, etc.)."""
     pass
 
 
-def remove_string_extras(string):
+def remove_string_extras(string: str) -> str:
+    """
+    Normalize numeric strings coming from device echoes/replies.
+
+    Behavior
+    --------
+    - If a decimal point is present, strip trailing zeros after it.
+    - Strip leading zeros and spaces.
+    - Strip trailing spaces and solitary decimal points.
+
+    Examples
+    --------
+    "003.5000 " -> "3.5"
+    "30.000"    -> "30"
+    "  0.120 "  -> "0.12"
+    """
     if "." in string:
         string = string.rstrip("0")
     string = string.lstrip("0 ")
@@ -26,18 +58,55 @@ def remove_string_extras(string):
 
 
 class Pump2000:
+    """
+    Harvard PHD2000 (legacy protocol) minimal driver.
+
+    Purpose
+    -------
+    - Provides helper methods to set diameter, flow rates, volumes, and to start/stop
+      infuse/withdraw operations using the PHD2000 command set (e.g., 'DIA', 'RAT', 'TGT', 'RUN').
+    - Validates the address and connectivity by querying 'VER' at construction.
+
+    Parameters
+    ----------
+    serial_connection : SerialConnection
+        An open serial connection.
+    address : int | str
+        Pump address (00-99). Stored and sent as a two-digit string.
+    name : str
+        Label used in logs.
+
+    Notes
+    -----
+    - This class uses **address-prefixed** commands and expects **fixed-length reads**.
+    - The script compares terminal status characters using HTML-escaped symbols
+      ("&gt;" for '>' and "&lt;" for '<') to match the source data as provided.
+    """
     # defines Pump2000 class with serial connection, address, and name
     # (used in logging)
     def __init__(self, serial_connection, address, name):
         self.serialcon = serial_connection
         self.address = "{0:02.0f}".format(int(address))
         self.name = name
-        # everytime Pump2000 is defined, version() function runs which tests writing/reading to pump at address
+        # every time Pump2000 is defined, version() tests writing/reading to pump at address
         self.version()
 
-    def write_read(
-        self, command, bytes=20
-    ):  # writes commands to pump, and gets response
+    def write_read(self, command, bytes=20):
+        """
+        Write a command (with address prefix and CR terminator) and read a fixed number of bytes.
+
+        Parameters
+        ----------
+        command : str
+            Command without address or terminator.
+        bytes : int
+            Number of bytes to read for the reply.
+
+        Returns
+        -------
+        str
+            Decoded reply string (using default decoder; device sends ASCII).
+        """
         # print(str.encode(str(self.address) + command + '\r'))
         self.serialcon.write(str.encode(str(self.address) + command + "\r"))
         response = self.serialcon.read(bytes)
@@ -45,7 +114,21 @@ class Pump2000:
         # print(response.decode())
         return response.decode()
 
-    def version(self, bytes=60):  # tests serial connection to pump at a certain address
+    def version(self, bytes=60):
+        """
+        Query firmware/version to validate connectivity and correct address.
+
+        Behavior
+        --------
+        - Sends 'VER' and inspects the tail of the reply for the address and status.
+        - If '*' is seen (target reached), clears target volume and tries again.
+        - Validates against 1-digit (0x) or 2-digit (xx) addresses.
+
+        Raises
+        ------
+        PumpError
+            If no response, or address mismatch is detected.
+        """
         version_pump = self.write_read("VER", bytes=bytes)
         if (
             len(version_pump) == 0
@@ -89,7 +172,24 @@ class Pump2000:
                 self.serialcon.close()
                 raise PumpError("wrong address")
 
-    def set_dia(self, diameter, bytes=60):  # sets diameter
+    def set_dia(self, diameter, bytes=60):
+        """
+        Set syringe diameter (mm) with range and precision checks.
+
+        Constraints
+        -----------
+        - 0.1 mm <= diameter <= 45 mm
+        - Device accepts up to ~2 decimal places; longer strings are truncated here.
+
+        Validation
+        ----------
+        - Reads back with 'DIA' and compares the normalized value.
+
+        Raises
+        ------
+        PumpError
+            If out of range or the echo does not match after setting.
+        """
         if (
             float(diameter) > 45 or float(diameter) < 0.1
         ):  # checks if diameter is within
@@ -140,9 +240,27 @@ class Pump2000:
                 self.serialcon.close()
                 raise PumpError("Diameter not updated correctly")
 
-    def set_infuse_rate(
-        self, infuse_rate, infuse_rate_units
-    ):  # sets the infuse rate (flow rate out from syringe)
+    def set_infuse_rate(self, infuse_rate, infuse_rate_units):
+        """
+        Set **infuse** rate (flow out of syringe).
+
+        Units (device grammar)
+        ----------------------
+        - 'ml/min' -> "RAT <value> MM"
+        - 'ul/min' -> "RAT <value> UM"
+        - 'ml/hr'  -> "RAT <value> MH"
+        - 'ul/hr'  -> "RAT <value> UH"
+
+        Behavior
+        --------
+        - Truncates overly long numeric strings.
+        - Sends the rate, checks for 'Out of range', and verifies via 'RAT' echo.
+
+        Raises
+        ------
+        PumpError
+            If out of range or echoed value mismatches.
+        """
         # choices=['ul/hr', 'ul/min', 'ml/hr', 'ml/min']
         if (
             len(remove_string_extras(str(infuse_rate))) > 6
@@ -197,9 +315,22 @@ class Pump2000:
             self.serialcon.close()
             raise PumpError("Infuse Rate not updated correctly")
 
-    def set_withdraw_rate(
-        self, withdraw_rate, withdraw_rate_units
-    ):  # sets the withdraw rate (flow rate into syringe)
+    def set_withdraw_rate(self, withdraw_rate, withdraw_rate_units):
+        """
+        Set **withdraw** rate (flow into syringe).
+
+        Units (device grammar)
+        ----------------------
+        - 'ml/min' -> "RFR <value> MM"
+        - 'ul/min' -> "RFR <value> UM"
+        - 'ml/hr'  -> "RFR <value> MH"
+        - 'ul/hr'  -> "RFR <value> UH"
+
+        Raises
+        ------
+        PumpError
+            If out of range or echoed value mismatches.
+        """
         # choices=['ul/hr', 'ul/min', 'ml/hr', 'ml/min']
         if (
             len(remove_string_extras(str(withdraw_rate))) > 6
@@ -254,9 +385,21 @@ class Pump2000:
             self.serialcon.close()
             raise PumpError("Withdraw Rate not updated correctly")
 
-    def set_target_volume(
-        self, target_volume, target_volume_units, bytes=60
-    ):  # sets the target volume for a pump
+    def set_target_volume(self, target_volume, target_volume_units, bytes=60):
+        """
+        Set the **target volume** for volumetric mode.
+
+        Behavior
+        --------
+        - Switches mode to volume ('MOD VOL').
+        - Converts μL -> mL when units are 'ul'.
+        - Normalizes/truncates the numeric string to device-friendly width.
+        - Sends 'TGT <ml>' to set target.
+
+        Notes
+        -----
+        Device may echo with different formats; this method logs the setpoint.
+        """
         self.write_read("MOD " + "VOL", bytes=bytes)  # sets pump to VOL mode
         if (
             target_volume_units == "ul"
@@ -282,20 +425,26 @@ class Pump2000:
             target_volume_units,
         )
 
-    def set_pump_mode(
-        self, bytes=60
-    ):  # if no target volume is set, then pump needs to be set to pump mode
-        # (flow indefintely instead of flow until target volume has been reached )
+    def set_pump_mode(self, bytes=60):
+        """
+        Switch to **pump mode** (no target volume; run until stopped).
+        """
+        # (flow indefinitely instead of flowing until target volume has been reached)
         self.write_read("MOD " + "PMP", bytes=bytes)
         logging.info("%s: set to pump mode", self.name)
 
-    def set_syringe_volume(
-        self, syringe_volume, syringe_volume_units, bytes=60
-    ):  # sets the syringe volume for a pump
+    def set_syringe_volume(self, syringe_volume, syringe_volume_units, bytes=60):
+        """
+        Set the **syringe volume** metadata on the device.
+
+        Notes
+        -----
+        - Converts μL -> mL when units are 'ul'.
+        - Truncates long numeric strings; writes 'SYR <ml>'.
+        """
         if (
             syringe_volume_units == "ul"
-        ):  # need to convert syringe volume (from ul to ml) if syringe volume
-            # unit is ul
+        ):  # need to convert syringe volume (from ul to ml) if syringe volume unit is ul
             syringe_volume = float(syringe_volume) / 1000
         syringe_volume = "{0:0.6f}".format(float(syringe_volume))
         if (
@@ -319,7 +468,14 @@ class Pump2000:
             syringe_volume_units,
         )
 
-    def set_stop(self, bytes=60):  # stops pump
+    def set_stop(self, bytes=60):
+        """
+        Stop the pump and validate terminal status.
+
+        Expected terminal status chars
+        ------------------------------
+        ':' or '*'
+        """
         stop_pump = self.write_read("STP", bytes=bytes)
         if (
             stop_pump[-1] == ":" or stop_pump[-1] == "*"
@@ -330,29 +486,52 @@ class Pump2000:
             self.serialcon.close()
             raise PumpError("Incorrect response to stop")
 
-    def set_irun(self, bytes=60):  # sets pump to infuse (flow out from syringe)
+    def set_irun(self, bytes=60):
+        """
+        Begin **infuse** (flow out from syringe).
+
+        Steps
+        -----
+        - 'DIR INF'
+        - 'RUN' and expect terminal status '&gt;' (HTML-escaped '>')
+        """
         self.write_read("DIR" + " INF", bytes=bytes)  # sets direction
         irun_pump = self.write_read("RUN", bytes=bytes)
-        if irun_pump[-1] == ">":  # checks if pump if infusing correctly
+        if irun_pump[-1] == "&gt;":  # checks if pump if infusing correctly
             logging.info("%s: Infusing", self.name)
         else:
             logging.error("%s: not infusing correctly", self.name)
             self.serialcon.close()
             raise PumpError("Incorrect response to irun")
 
-    def set_wrun(self, bytes=60):  # sets pump to withdraw (flow into syringe)
+    def set_wrun(self, bytes=60):
+        """
+        Begin **withdraw** (flow into syringe).
+
+        Steps
+        -----
+        - 'DIR REF'
+        - 'RUN' and expect terminal status '&lt;' (HTML-escaped '<')
+        """
         self.write_read("DIR" + " REF", bytes=bytes)  # sets direction
         wrun_pump = self.write_read("RUN", bytes=bytes)
-        if wrun_pump[-1] == "<":  # checks if pump if withdrawing correctly
+        if wrun_pump[-1] == "&lt;":  # checks if pump if withdrawing correctly
             logging.info("%s: Withdrawing", self.name)
         else:
             logging.error("%s: not withdrawing correctly", self.name)
             self.serialcon.close()
             raise PumpError("Incorrect response to wrun")
 
-    def wait_for_target(
-        self, i_or_w, bytes=60
-    ):  # infuse or withdraw, then wait for target
+    def wait_for_target(self, i_or_w, bytes=60):
+        """
+        Start (infuse/withdraw) and then wait until target is reached (basic polling).
+
+        Behavior
+        --------
+        - For 'infuse': issue 'DIR INF'+'RUN' (via set_irun), then read 'DEL' to check delivered volume.
+        - For 'withdraw': issue 'DIR REF'+'RUN' (via set_wrun), then read 'DEL'.
+        - If ':' is seen on first pass → not running; if ':' on later pass → target reached.
+        """
         if i_or_w == "infuse":
             self.set_irun(bytes=60)  # set pump to infuse
             i = 0
@@ -392,15 +571,25 @@ class Pump2000:
             self.serialcon.close()
             raise PumpError("need flow direction (infuse or withdraw)")
 
-    def set_poll(self, i_or_w, bytes=60):  # checks volume delivered
+    def set_poll(self, i_or_w, bytes=60):
+        """
+        Poll delivered volume / status and log whether stopped or still running.
+
+        Behavior
+        --------
+        - Uses 'DEL' and interprets terminal status char:
+            ':' or '*' → stopped
+            '&gt;'     → infusing
+            '&lt;'     → withdrawing
+        """
         poll_pump = self.write_read("DEL", bytes=bytes)
         if poll_pump[-1] == ":" or poll_pump[-1] == "*":  # pump has stopped
             logging.info("%s: pump has stopped", self.name)
-        elif poll_pump[-1] == ">":  # still infusing
+        elif poll_pump[-1] == "&gt;":  # still infusing
             logging.info(
                 "%s: has not reached target volume and is still infusing", self.name
             )
-        elif poll_pump[-1] == "<":  # still withdrawing
+        elif poll_pump[-1] == "&lt;":  # still withdrawing
             logging.info(
                 "%s: has not reached target volume and is still withdrawing", self.name
             )
@@ -409,22 +598,41 @@ class Pump2000:
             self.serialcon.close()
             raise PumpError("Incorrect response to polling")
 
-    def clear_target_volume(self, bytes=60):  # clear delivered  volume
+    def clear_target_volume(self, bytes=60):
+        """
+        Clear delivered and target volumes (reset counters), logging the action.
+        """
         self.write_read("CLD", bytes=bytes)
         logging.info("%s: volume has been cleared", self.name)
 
 
-class PumpUltra:  # defines PumpUltra class with serial connection, address, and name (used in logging)
+class PumpUltra:
+    """
+    Harvard PHD Ultra minimal driver.
+
+    Purpose
+    -------
+    - Similar structure to `Pump2000`, but uses the Ultra's text commands:
+      * 'ver', 'diameter', 'irate', 'wrate', 'tvolume', 'svolume', 'stop', 'irun', 'wrun', etc.
+    - Validates address using 'ver' response tail.
+
+    Notes
+    -----
+    - String slicing offsets differ from Pump2000 ('diameter' echoes are parsed from the
+      tail of the line, for example).
+    """
+    # defines PumpUltra class with serial connection, address, and name (used in logging)
     def __init__(self, chain, address, name):
         self.name = name
         self.serialcon = chain
         self.address = "{0:02.0f}".format(int(address))
-        # everytime PumpUltra is defined, version() function runs which tests writing/reading to pump at address
+        # every time PumpUltra is defined, version() tests writing/reading to pump at address
         self.version()
 
-    def write_read(
-        self, command, bytes=20
-    ):  # writes commands to pump, and gets response
+    def write_read(self, command, bytes=20):
+        """
+        Write + read helper (address-prefixed ASCII command, fixed-size read).
+        """
         # print(str.encode(str(self.address) + command + '\r'))
         self.serialcon.write(str.encode(str(self.address) + command + "\r"))
         response = self.serialcon.read(bytes)
@@ -432,7 +640,15 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
         # print(response.decode())
         return response.decode()
 
-    def version(self, bytes=60):  # tests serial connection to pump at a certain address
+    def version(self, bytes=60):
+        """
+        Validate connectivity and correct address via 'ver'.
+
+        Raises
+        ------
+        PumpError
+            If no response or the address substring does not match.
+        """
         version_pump = self.write_read("ver", bytes=bytes)
         if (
             len(version_pump) == 0
@@ -462,7 +678,16 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("wrong address")
 
-    def set_dia(self, diameter, bytes=60):  # sets diameter
+    def set_dia(self, diameter, bytes=60):
+        """
+        Set syringe diameter (mm) on PHD Ultra.
+
+        Validation
+        ----------
+        - Checks 0.1 <= diameter <= 45.
+        - Truncates overly long numeric strings.
+        - Reads/compares echo via 'diameter'.
+        """
         if (
             float(diameter) > 45 or float(diameter) < 0.1
         ):  # checks if diameter is within
@@ -512,9 +737,14 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
                 self.serialcon.close()
                 raise PumpError("Diameter not updated correctly")
 
-    def set_infuse_rate(
-        self, infuse_rate, infuse_rate_units
-    ):  # sets the infuse rate (flow rate out from syringe)
+    def set_infuse_rate(self, infuse_rate, infuse_rate_units):
+        """
+        Set **infuse** rate on PHD Ultra.
+
+        Command format
+        --------------
+        'irate <value> <units>'
+        """
         if (
             len(remove_string_extras(str(infuse_rate))) > 6
         ):  # checks if flow rate needs to be truncated
@@ -565,9 +795,14 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("Infuse Rate not updated correctly")
 
-    def set_withdraw_rate(
-        self, withdraw_rate, withdraw_rate_units
-    ):  # sets the withdraw rate (flow rate into syringe)
+    def set_withdraw_rate(self, withdraw_rate, withdraw_rate_units):
+        """
+        Set **withdraw** rate on PHD Ultra.
+
+        Command format
+        --------------
+        'wrate <value> <units>'
+        """
         if (
             len(remove_string_extras(str(withdraw_rate))) > 6
         ):  # checks if flow rate needs to be truncated
@@ -617,9 +852,11 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("Withdraw Rate not updated correctly")
 
-    def set_target_volume(
-        self, target_volume, target_volume_units, bytes=60
-    ):  # sets the target volume for a pump
+    def set_target_volume(self, target_volume, target_volume_units, bytes=60):
+        """
+        Set target volume on PHD Ultra:
+          'tvolume <value> <units>'
+        """
         self.clear_target_volume(bytes=bytes)
         if (
             len(remove_string_extras(str(target_volume))) > 6
@@ -644,9 +881,11 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             target_volume_units,
         )
 
-    def set_syringe_volume(
-        self, syringe_volume, syringe_volume_units, bytes=60
-    ):  # sets the syringe volume for a pump
+    def set_syringe_volume(self, syringe_volume, syringe_volume_units, bytes=60):
+        """
+        Set syringe volume metadata on PHD Ultra:
+          'svolume <value> <units>'
+        """
         if (
             len(remove_string_extras(str(syringe_volume))) > 6
         ):  # checks if syringe volume needs to be truncated
@@ -670,7 +909,11 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             syringe_volume_units,
         )
 
-    def set_stop(self, bytes=60):  # stops pump
+    def set_stop(self, bytes=60):
+        """
+        Stop (PHD Ultra variant):
+          'stop' -> expect ':' terminal status.
+        """
         stop_pump = self.write_read("stop", bytes=bytes)
         if stop_pump[-1] == ":":  # checks if pump has correctly stopped
             logging.info("%s: stopped", self.name)
@@ -679,27 +922,42 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("Incorrect response to stop")
 
-    def set_irun(self, bytes=60):  # sets pump to infuse (flow out from syringe)
+    def set_irun(self, bytes=60):
+        """
+        Begin **infuse**:
+          'irun' -> expect '&gt;' terminal status (HTML-escaped '>').
+        """
         irun_pump = self.write_read("irun", bytes=bytes)
-        if irun_pump[-1] == ">":  # checks if pump if infusing correctly
+        if irun_pump[-1] == "&gt;":  # checks if pump if infusing correctly
             logging.info("%s: Infusing", self.name)
         else:
             logging.error("%s: not infusing correctly", self.name)
             self.serialcon.close()
             raise PumpError("Incorrect response to irun")
 
-    def set_wrun(self, bytes=60):  # sets pump to withdraw (flow into syringe)
+    def set_wrun(self, bytes=60):
+        """
+        Begin **withdraw**:
+          'wrun' -> expect '&lt;' terminal status (HTML-escaped '<').
+        """
         wrun_pump = self.write_read("wrun", bytes=bytes)
-        if wrun_pump[-1] == "<":  # checks if pump if withdrawing correctly
+        if wrun_pump[-1] == "&lt;":  # checks if pump if withdrawing correctly
             logging.info("%s: Withdrawing", self.name)
         else:
             logging.error("%s: not withdrawing correctly", self.name)
             self.serialcon.close()
             raise PumpError("Incorrect response to wrun")
 
-    def wait_for_target(
-        self, i_or_w, bytes=60
-    ):  # infuse or withdraw, then wait for target
+    def wait_for_target(self, i_or_w, bytes=60):
+        """
+        Run (infuse/withdraw) and wait for target (Ultra variant).
+
+        Behavior
+        --------
+        - For 'infuse': 'irun', then poll 'ivolume'.
+        - For 'withdraw': 'wrun', then poll 'wvolume'.
+        - ':' on first pass → not running; '*' later → target reached.
+        """
         if i_or_w == "infuse":
             self.write_read("irun", bytes=bytes)  # set pump to infuse
             i = 0
@@ -739,7 +997,15 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("need flow direction (infuse or withdraw)")
 
-    def set_poll(self, i_or_w, bytes=60):  # checks volume delivered
+    def set_poll(self, i_or_w, bytes=60):
+        """
+        Poll volume/status (Ultra variant).
+
+        Commands
+        --------
+        - 'ivolume' (infuse) or 'wvolume' (withdraw)
+        - Logs status character to indicate stopped / infusing / withdrawing.
+        """
         if i_or_w == "infuse":
             poll_pump = self.write_read("ivolume", bytes=bytes)
         elif i_or_w == "withdraw":
@@ -750,11 +1016,11 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             raise PumpError("need flow direction (infuse or withdraw)")
         if poll_pump[-1] == ":":  # pump has stopped
             logging.info("%s: pump has stopped", self.name)
-        elif poll_pump[-1] == ">":  # still infusing
+        elif poll_pump[-1] == "&gt;":  # still infusing
             logging.info(
                 "%s: has not reached target volume and is still infusing", self.name
             )
-        elif poll_pump[-1] == "<":  # still withdrawing
+        elif poll_pump[-1] == "&lt;":  # still withdrawing
             logging.info(
                 "%s: has not reached target volume and is still withdrawing", self.name
             )
@@ -763,14 +1029,19 @@ class PumpUltra:  # defines PumpUltra class with serial connection, address, and
             self.serialcon.close()
             raise PumpError("Incorrect response to polling")
 
-    def clear_target_volume(self, bytes=60):  # clear target volume
+    def clear_target_volume(self, bytes=60):
+        """
+        Clear target-volume related counters (Ultra variant): 'cvolume', 'ctvolume'.
+        """
         self.write_read("cvolume", bytes=bytes)
         self.write_read("ctvolume", bytes=bytes)
         logging.info("%s: volume has been cleared", self.name)
 
 
 if __name__ == "__main__":
-
+    # ----------------------------------------------------------------------------------
+    # Quick local example (imperative): open COM10, address 0, set diameter and infuse
+    # ----------------------------------------------------------------------------------
     sc_com4 = SerialConnection('COM10')
     address = 0
     pump_2000_1 = PumpUltra(sc_com4, address, name='PHD2000_1')
@@ -788,6 +1059,10 @@ if __name__ == "__main__":
     time.sleep(5)
     pump_2000_1.set_stop()
 
+    # ----------------------------------------------------------------------------------
+    # Command-line interface (commented path begins after exit()).
+    # Pass flags to set rates/volumes and run the pump from the shell.
+    # ----------------------------------------------------------------------------------
 
     exit()
     parser = argparse.ArgumentParser(
@@ -931,13 +1206,11 @@ if __name__ == "__main__":
                 if args.infuse_wait:
                     iw = pump_ultra.wait_for_target(
                         i_or_w="infuse", bytes=60
-                    )  # runs pump in the infuse direction then waits for
-                    # target
+                    )  # runs pump in the infuse direction then waits for target
                 if args.withdraw_wait:
                     ww = pump_ultra.wait_for_target(
                         i_or_w="withdraw", bytes=60
-                    )  # runs pump in the infuse direction
-                    # then waits for target
+                    )  # runs pump in the infuse direction then waits for target
 
         if args.PHD2000:  # if PHDULTRA is an argument from the command line
             print("You are using a PHD2000, make sure the pump is in Model 44 mode")

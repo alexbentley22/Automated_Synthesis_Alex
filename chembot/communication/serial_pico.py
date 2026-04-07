@@ -242,11 +242,6 @@ class PicoSerial(Serial):
             'n' = no pull, 'u' = pull-up, 'd' = pull-down.
             Use None to let validator apply defaults.
 
-        Protocol
-        --------
-        Host -> Pico:  'd{pin:02}o{resistor}{value}'
-        Pico -> Host:  'd'
-
         Raises
         ------
         ValueError
@@ -295,11 +290,6 @@ class PicoSerial(Serial):
         -------
         int
             0 or 1 corresponding to logic level.
-
-        Protocol
-        --------
-        Host -> Pico:  'd{pin:02}i{resistor}'
-        Pico -> Host:  'd{value}'
         """
         # validation
         PicoHardware.validate_GPIO_pin(pin)
@@ -329,10 +319,6 @@ class PicoSerial(Serial):
         int
             Raw ADC code (0..65535).
 
-        Protocol
-        --------
-        Host -> Pico:  'a{pin:02}'
-        Pico -> Host:  'a{value}'
         """
         # validation
         PicoHardware.validate_adc_pin(pin)
@@ -376,11 +362,6 @@ class PicoSerial(Serial):
             Duty cycle [0..65535]. 0 disables PWM.
         frequency : int
             PWM base frequency [7..125_000_000] (hardware limits apply).
-
-        Protocol
-        --------
-        Host -> Pico:  'p{pin:02}{duty:05}{frequency:09}'
-        Pico -> Host:  'p'
         """
         # validation
         PicoHardware.validate_GPIO_pin(pin)
@@ -409,11 +390,6 @@ class PicoSerial(Serial):
             PWM base frequency [7..125_000_000].
         time_ : Quantity
             Pulse duration; validated/sanitized by `PicoHardware.validate_pwm_time`.
-
-        Protocol
-        --------
-        Host -> Pico:  'q{pin:02}{duty:05}{frequency:09}{time_}'
-        Pico -> Host:  'q'
         """
         # validation
         PicoHardware.validate_GPIO_pin(pin)
@@ -457,11 +433,6 @@ class PicoSerial(Serial):
             0=even, 1=odd, 2=none (if None provided, defaults to 2 for protocol).
         stop : int
             Stop bits [1, 2].
-
-        Protocol
-        --------
-        Host -> Pico:  't{uart}{tx}{rx}{baud:06}{bits}{parity}{stop}w{message}'
-        Pico -> Host:  't'
         """
         # validation
         PicoHardware.validate_uart_pin(uart_id, tx_pin, rx_pin)
@@ -503,11 +474,6 @@ class PicoSerial(Serial):
         -------
         str
             Raw data payload.
-
-        Protocol
-        --------
-        Host -> Pico:  't{uart}{tx}{rx}{baud:06}{bits}{parity}{stop}s{amount}'
-        Pico -> Host:  't{payload}'
         """
         # validation
         PicoHardware.validate_uart_pin(uart_id, tx_pin, rx_pin)
@@ -547,11 +513,6 @@ class PicoSerial(Serial):
         -------
         str
             Raw data payload.
-
-        Protocol
-        --------
-        Host -> Pico:  't{uart}{tx}{rx}{baud:06}{bits}{parity}{stop}r'
-        Pico -> Host:  't{payload}'
         """
         # validation
         PicoHardware.validate_uart_pin(uart_id, tx_pin, rx_pin)
@@ -594,11 +555,6 @@ class PicoSerial(Serial):
         -------
         str
             Reply payload.
-
-        Protocol
-        --------
-        Host -> Pico:  't{uart}{tx}{rx}{baud:06}{bits}{parity}{stop}b{message}'
-        Pico -> Host:  't{payload}'
         """
         # validation
         PicoHardware.validate_uart_pin(uart_id, tx_pin, rx_pin)
@@ -639,11 +595,6 @@ class PicoSerial(Serial):
             Data to write.
         SPI configuration fields:
             spi_id in {0,1}, pins (sck/mosi/miso/cs), baudrate, bits, polarity, phase.
-
-        Protocol
-        --------
-        Host -> Pico:  's{spi}{sck}{mosi}{miso}{baud:06}{bits}{pol}{phase}{cs}w{message}'
-        Pico -> Host:  's'
         """
         # validation
         PicoHardware.validate_spi_pin(spi_id, sck_pin, mosi_pin, miso_pin, cs_pin)
@@ -687,11 +638,6 @@ class PicoSerial(Serial):
         -------
         str
             Raw data payload.
-
-        Protocol
-        --------
-        Host -> Pico:  's{spi}{sck}{mosi}{miso}{baud:06}{bits}{pol}{phase}{cs}r{amount}'
-        Pico -> Host:  's{payload}'
         """
         # validation
         PicoHardware.validate_spi_pin(spi_id, sck_pin, mosi_pin, miso_pin, cs_pin)
@@ -740,11 +686,6 @@ class PicoSerial(Serial):
         -------
         str
             Reply payload.
-
-        Protocol
-        --------
-        Host -> Pico:  's{spi}{sck}{mosi}{miso}{baud:06}{bits}{pol}{phase}{cs}b{amount:03}{message}'
-        Pico -> Host:  's{payload}'
         """
         # validation
         PicoHardware.validate_spi_pin(spi_id, sck_pin, mosi_pin, miso_pin, cs_pin)
@@ -788,11 +729,6 @@ class PicoSerial(Serial):
             GPIO pins for SCL/SDA.
         frequency : int
             I2C clock frequency (e.g., 400_000 for 400 kHz).
-
-        Protocol
-        --------
-        Host -> Pico:  'i{i2c}{scl}{sda}{freq:06}w{message}'
-        Pico -> Host:  'i'
         """
         # validation
         PicoHardware.validate_i2c_pins(i2c_id, scl_pin, sda_pin)
@@ -831,11 +767,6 @@ class PicoSerial(Serial):
         -------
         str
             Reply payload.
-
-        Protocol
-        --------
-        Host -> Pico:  'i{i2c}{scl}{sda}{freq:06}r{amount}'
-        Pico -> Host:  'i{payload}'
         """
         # validation
         PicoHardware.validate_i2c_pins(i2c_id, scl_pin, sda_pin)
@@ -870,11 +801,6 @@ class PicoSerial(Serial):
         -------
         str
             Reply payload (format depends on Pico firmware: typically CSV or raw bytes).
-
-        Protocol
-        --------
-        Host -> Pico:  'i{i2c}{scl}{sda}{freq:06}s'
-        Pico -> Host:  'i{payload}'
         """
         # validation
         PicoHardware.validate_i2c_pins(i2c_id, scl_pin, sda_pin)
@@ -915,11 +841,6 @@ class PicoSerial(Serial):
         -------
         str
             Reply payload.
-
-        Protocol
-        --------
-        Host -> Pico:  'i{i2c}{scl}{sda}{freq:06}b{amount:03}{message}'
-        Pico -> Host:  'i{payload}'
         """
         # validation
         PicoHardware.validate_i2c_pins(i2c_id, scl_pin, sda_pin)
