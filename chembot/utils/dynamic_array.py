@@ -3,9 +3,27 @@ from typing import Sized
 
 
 def get_max_index(index: int | slice | tuple[int]) -> int:
-    """ get max index """
+    """
+    Compute the maximum absolute index referenced by an indexing operation.
+
+    Purpose
+    -------
+    - Support bounds checking for DynamicArray indexing.
+    - Normalize different indexing types (int, slice, tuple).
+
+    Parameters
+    ----------
+    index : int | slice | tuple[int]
+        Index or slice expression used to access the array.
+
+    Returns
+    -------
+    int
+        Maximum absolute index referenced.
+    """
     if isinstance(index, int):
         return abs(index)
+
     if isinstance(index, tuple):
         return abs(int(index[0]))
 
@@ -14,149 +32,209 @@ def get_max_index(index: int | slice | tuple[int]) -> int:
 
 
 def get_object_size(x: int | float | Sized) -> int:
-    if isinstance(x, int) or isinstance(x, float):
+    """
+    Determine how many rows an object contributes when appended.
+
+    Purpose
+    -------
+    - Normalize scalar vs sequence inputs for DynamicArray.append().
+    - Ensure consistent capacity growth calculations.
+    """
+    if isinstance(x, (int, float)):
         return 1
+
     if isinstance(x, np.ndarray):
         return x.shape[0]
-    elif hasattr(x, "__len__"):
+
+    if hasattr(x, "__len__"):
         return len(x)
-    else:
-        raise ValueError("Invalid item to add.")
+
+    raise ValueError("Invalid item to add.")
 
 
 class DynamicArray:
     """
-    A class to dynamically grow numpy array as data is added in an efficient manner.
-    For arrays or column vectors (new rows added, but no new added columns).
+    A dynamically growing NumPy-backed array optimized for appends.
 
-    Attributes:
-    ----------
-    shape: int, array_type
-        Starting shape of the dynamic array
-    index_expansion: bool
-        allow setting indexing outside current capacity
-        will set all values between previous size to new value to zero
-
-    Example
+    Purpose
     -------
-    a = DynamicArray((100, 2))
-    a.append(np.ones((20, 2)))
-    a.append(np.ones((120, 2)))
-    a.append(np.ones((10020, 2)))
-    print(a.data)
-    print(a.data.shape)
+    - Efficiently append rows to a NumPy array without reallocating
+      on every append.
+    - Mimic list-like growth behavior while preserving NumPy semantics.
+
+    Supported Use Cases
+    -------------------
+    - Time series accumulation.
+    - Streaming numeric data.
+    - Growing column vectors or 2D arrays with fixed column count.
+
+    Design Notes
+    ------------
+    - Capacity is managed manually to amortize reallocation cost.
+    - Only grows along axis 0 (rows); number of columns is fixed.
     """
 
-    def __init__(self, shape: tuple[int, int] | int = (100,), index_expansion: bool = False):
+    def __init__(
+        self,
+        shape: tuple[int, int] | int = (100,),
+        index_expansion: bool = False
+    ):
+        """
+        Parameters
+        ----------
+        shape : tuple[int, int] | int
+            Initial capacity (rows) and optional column count.
+        index_expansion : bool
+            Whether assignment outside the current size is allowed.
+            (Currently unused due to commented-out __setitem__.)
+        """
         self._data = None
         self.capacity = shape[0]
         self.size = 0
         self.index_expansion = index_expansion
 
     def __str__(self):
+        """String representation showing active data only."""
         return self.data.__str__()
 
     def __repr__(self):
-        return self.data.__repr__().replace("array", f'DynamicArray(size={self.size}, capacity={self.capacity})')
+        """Verbose representation including size and capacity."""
+        return self.data.__repr__().replace(
+            "array",
+            f"DynamicArray(size={self.size}, capacity={self.capacity})",
+        )
 
     def __getitem__(self, index: int | slice | tuple[int]):
+        """
+        Retrieve data with bounds checking against current size.
+        """
         size = get_max_index(index)
         if size > self.size:
-            raise IndexError(f"index {size} is out of bounds for axis 0 with size {self.size}")
+            raise IndexError(
+                f"index {size} is out of bounds for axis 0 with size {self.size}"
+            )
 
         return self.data[index]
 
-    # def __setitem__(self, index: int | slice | tuple[int], value: int | slice | tuple[int]):
-    #     max_index = get_max_index(index)
-    #     if max_index > self.size and not self.index_expansion:
-    #         raise IndexError(f"index {max_index} is out of bounds for axis 0 with size {self.size}")
-    #
-    #     size = get_object_size(x)
-    #     self._capacity_check(size)
-    #
-    #     # add data
-    #     if isinstance(index, int) and index < 0 or \
-    #             isinstance(index, slice) and (index.start < 0 or index.stop < 0) or \
-    #             isinstance(index, tuple) and any(i < 0 for i in index):
-    #         # handle negative indexing
-    #         self.data[index] = value
-    #     else:
-    #         # handling positive indexing
-    #         self._data[index] = value
-    #
-    #     # update capacity and size (if it was outside current size)
-    #     if max_index > self.size:
-    #         capacity_change = max_index - self.size
-    #         self.capacity -= capacity_change
-    #         self.size += capacity_change
-
     def __getattribute__(self, name):
+        """
+        Forward attribute access to underlying NumPy array when needed.
+
+        Behavior
+        --------
+        - Attempts normal attribute lookup first.
+        - If attribute is missing, dispatches to `self.data`.
+        - Callable attributes are wrapped to preserve behavior.
+        """
         try:
             attr = object.__getattribute__(self, name)
         except AttributeError:
-            # check numpy for function call
+            # Fallback to NumPy array attributes
             attr = object.__getattribute__(self.data, name)
 
-        if hasattr(attr, '__call__'):
+        if callable(attr):
             def newfunc(*args, **kwargs):
-                result = attr(*args, **kwargs)
-                return result
+                return attr(*args, **kwargs)
             return newfunc
 
-        else:
-            return attr
+        return attr
 
     def __len__(self):
+        """Return number of valid rows in the array."""
         return self.size
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def data(self):
-        """ Returns data without extra spaces. """
+        """
+        Return active portion of the underlying array.
+
+        Notes
+        -----
+        - Excludes unused capacity.
+        """
         return self._data[:self.size]
 
     @property
     def shape(self) -> tuple[int, int]:
+        """
+        Shape of the active data.
+        """
         return self.size, self.data.shape[0]
 
     @property
     def dtype(self):
+        """Data type of the underlying NumPy array."""
         return self.data.dtype
 
+    # ------------------------------------------------------------------
+    # Mutation methods
+    # ------------------------------------------------------------------
+
     def append(self, x: np.ndarray | list | tuple | int | float):
-        """ Add data to array. """
+        """
+        Append data to the array, expanding capacity if needed.
+
+        Parameters
+        ----------
+        x : np.ndarray | list | tuple | int | float
+            Data to append along axis 0.
+        """
         size = get_object_size(x)
         self._capacity_check(size)
 
-        # Add new data to array
-        self._data[self.size:self.size + size] = x
+        # Add new data
+        self._data[self.size : self.size + size] = x
         self.size += size
         self.capacity -= size
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _capacity_check_index(self, index: int = 0):
+        """
+        Ensure capacity exists for direct index assignment.
+
+        Notes
+        -----
+        - Intended for use with index expansion behavior.
+        """
         if index > len(self._data):
-            add_size = (index-len(self._data)) + self.capacity
+            add_size = (index - len(self._data)) + self.capacity
             self._grow_capacity(add_size)
 
     def _capacity_check(self, size: int):
-        """ Check if there is room for the new data. """
+        """
+        Ensure underlying array can accommodate `size` new rows.
+
+        Strategy
+        --------
+        - If remaining capacity is sufficient, do nothing.
+        - Otherwise, grow array by doubling or minimal expansion.
+        """
         if size < self.capacity:
             return
 
-        # calculate what change is needed.
+        # Calculate additional space required
         change_need = size - self.capacity
 
-        # make new larger data array
         shape_ = list(self._data.shape)
+
         if shape_[0] + self.capacity > size:
-            # double in size
+            # Double the array size
             self.capacity += shape_[0]
-            shape_[0] = shape_[0] * 2
+            shape_[0] *= 2
         else:
-            # if doubling is not enough, grow to fit incoming data exactly.
+            # Grow just enough to fit incoming data
             self.capacity += change_need
-            shape_[0] = shape_[0] + change_need
+            shape_[0] += change_need
+
         newdata = np.zeros(shape_, dtype=self._data.dtype)
 
-        # copy data into new array and replace old one
-        newdata[:self._data.shape[0]] = self._data
+        # Copy old data into new array
+        newdata[: self._data.shape[0]] = self._data
         self._data = newdata

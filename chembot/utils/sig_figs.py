@@ -1,20 +1,41 @@
-
 def sig_figs(number: float | int, sig_digit: int = 3) -> int | float:
-    """ significant figures
-    Given a number return a string rounded to the desired significant digits.
+    """
+    Reduce a numeric value to a specified number of significant figures.
+
+    Purpose
+    -------
+    - Provide a simple, standardized way to round numbers by significant digits
+      rather than fixed decimal places.
+    - Preserve the numeric type (int or float) where possible.
+
     Parameters
     ----------
-    number: float, int
-        number you want to reduce significant figures on
-    sig_digit: int
-        significant digits
+    number : float | int
+        The numeric value to be rounded.
+    sig_digit : int
+        The number of significant digits to retain.
+
     Returns
     -------
-    number: int, float
+    float | int
+        The rounded value with the requested significant figures.
+
+    Raises
+    ------
+    TypeError
+        If `number` is not an int or float.
     """
     if isinstance(number, float):
-        return float('{:.{p}g}'.format(number, p=sig_digit))
+        # Use general format to round to significant figures
+        return float("{:.{p}g}".format(number, p=sig_digit))
+
     elif isinstance(number, int):
-        return int('{:.{p}g}'.format(number, p=sig_digit))
+        # Preserve integer type when possible
+        return int("{:.{p}g}".format(number, p=sig_digit))
+
     else:
-        raise TypeError(f"'sig_figs' only accepts int or float. Given: {number} (type: {type(number)}")
+        # Explicit type enforcement for safety
+        raise TypeError(
+            f"'sig_figs' only accepts int or float. "
+            f"Given: {number} (type: {type(number)})"
+        )

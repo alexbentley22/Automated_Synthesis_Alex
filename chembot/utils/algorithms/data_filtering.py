@@ -1,39 +1,72 @@
-
 import numpy as np
 
 
 class Filter:
+    """
+    Base class for data filters.
+
+    Purpose
+    -------
+    - Provide a common interface for filter implementations.
+    - Act as a placeholder/extension point for concrete filters
+      (e.g., FIR, IIR, CUSUM-based, exponential smoothing).
+
+    Notes
+    -----
+    - Currently defines no behavior.
+    - Intended to be subclassed.
+    """
 
     def __init__(self):
         pass
 
     def process_data(self, data):
+        """
+        Process incoming data and return filtered output.
+
+        Notes
+        -----
+        - Not implemented in the base class.
+        - Subclasses should override this method.
+        """
         pass
 
 
-def savitzky_golay_filter_matrix(data: np.ndarray, window_size, order, axis=0, deriv=0, rate=1):
+def savitzky_golay_filter_matrix(
+    data: np.ndarray,
+    window_size,
+    order,
+    axis=0,
+    deriv=0,
+    rate=1,
+):
     """
-    Applies the Savitzky-Golay filter to a matrix along a specified axis.
+    Apply the Savitzky-Golay filter to a multi-dimensional array.
+
+    Purpose
+    -------
+    - Perform smoothing or differentiation on data arranged as a matrix.
+    - Apply the filter independently along a selected axis.
 
     Parameters
-    ---------
-    data:
+    ----------
+    data : np.ndarray
         Input matrix of data points.
-    window_size:
-        Size of the smoothing window. It must be a positive odd number.
-    order:
-        Order of the polynomial to fit. It must be a non-negative integer.
-    axis:
-        The axis along which to apply the filter (default: 0).
-    deriv:
-        The order of the derivative to compute (default: 0).
-    rate:
-        The sampling rate of the input data (default: 1).
+    window_size : int
+        Size of the smoothing window (must be positive and odd).
+    order : int
+        Polynomial order used in smoothing.
+    axis : int
+        Axis along which to apply the filter.
+    deriv : int
+        Order of derivative to compute (0 = smoothing).
+    rate : int
+        Sampling rate of the input data.
 
     Returns
     -------
-    results:
-        The filtered matrix.
+    np.ndarray
+        Filtered data matrix.
     """
     try:
         window_size = np.abs(int(window_size))
@@ -41,101 +74,172 @@ def savitzky_golay_filter_matrix(data: np.ndarray, window_size, order, axis=0, d
     except ValueError:
         raise ValueError("window_size and order have to be of type int")
 
+    # Validate window and polynomial order
     if window_size % 2 != 1 or window_size < 1:
         raise TypeError("window_size size must be a positive odd number")
     if window_size < order + 2:
         raise TypeError("window_size is too small for the polynomials order")
 
+    # Apply the 1D Savitzky-Golay filter along the specified axis
     filtered_matrix = np.apply_along_axis(
-        lambda x: savitzky_golay_filter(x, window_size, order, deriv=deriv, rate=rate),
-                                          axis=axis, arr=data
+        lambda x: savitzky_golay_filter(
+            x, window_size, order, deriv=deriv, rate=rate
+        ),
+        axis=axis,
+        arr=data,
     )
 
     return filtered_matrix
 
 
-def savitzky_golay_filter(y, window_size, order, deriv=0, rate=1):
+def savitzky_golay_filter(
+    y,
+    window_size,
+    order,
+    deriv=0,
+    rate=1,
+):
     """
-    Applies the Savitzky-Golay filter to a one-dimensional array.
+    Apply the Savitzky-Golay filter to a one-dimensional signal.
 
-    Args:
-        y (ndarray): Input one-dimensional array of data points.
-        window_size (int): Size of the smoothing window. It must be a positive odd number.
-        order (int): Order of the polynomial to fit. It must be a non-negative integer.
-        deriv (int, optional): The order of the derivative to compute (default: 0).
-        rate (int, optional): The sampling rate of the input data (default: 1).
-
-    Returns:
-        ndarray: The filtered array.
-
-    Raises:
-        ValueError: If `window_size` or `order` is not of type int.
-        TypeError: If `window_size` is not a positive odd number or if it is too small for the given order.
-
-    """
-    order_range = range(order + 1)
-    half_window = (window_size - 1) // 2
-    b = np.mat([[k ** i for i in order_range] for k in range(-half_window, half_window + 1)])
-    m = np.linalg.pinv(b).A[deriv] * rate ** deriv * np.factorial(deriv)
-    firstvals = y[0] - np.abs(y[1:half_window + 1][::-1] - y[0])
-    lastvals = y[-1] + np.abs(y[-half_window - 1:-1][::-1] - y[-1])
-    y = np.concatenate((firstvals, y, lastvals))
-    return np.convolve(m[::-1], y, mode='valid')
-
-
-def filter_exponential(prior_data: np.ndarray, new_data: np.ndarray, a: int | float = 0.8) -> np.ndarray:
-    """
-    The exponential filter is a weighted combination of the previous estimate (output) with the newest input data,
-    with the sum of the weights equal to 1 so that the output matches the input at steady state.
+    Purpose
+    -------
+    - Smooth noisy signals while preserving local shape.
+    - Compute smoothed derivatives of the signal.
 
     Parameters
     ----------
-    prior_data:
-        filtered output from last time step
-    new_data:
-        new data for this time step
-    a:
-        smoothing constant
-        a is a constant between 0 and 1, normally between 0.8 and 0.99
+    y : np.ndarray
+        One-dimensional input signal.
+    window_size : int
+        Size of the smoothing window (must be positive and odd).
+    order : int
+        Polynomial order used in the fit.
+    deriv : int
+        Derivative order (0 = smoothing).
+    rate : int
+        Sampling rate.
 
     Returns
     -------
-    result:
-         filtered output for this step
+    np.ndarray
+        Filtered signal.
+
+    Notes
+    -----
+    - Uses a least-squares polynomial fit over a sliding window.
+    - Pads signal at both ends to avoid boundary effects.
+    """
+    order_range = range(order + 1)
+    half_window = (window_size - 1) // 2
+
+    # Construct Vandermonde matrix
+    b = np.mat(
+        [[k ** i for i in order_range]
+         for k in range(-half_window, half_window + 1)]
+    )
+
+    # Compute filter coefficients
+    m = (
+        np.linalg.pinv(b).A[deriv]
+        * rate ** deriv
+        * np.factorial(deriv)
+    )
+
+    # Pad the signal at the boundaries
+    firstvals = y[0] - np.abs(y[1 : half_window + 1][::-1] - y[0])
+    lastvals = y[-1] + np.abs(y[-half_window - 1 : -1][::-1] - y[-1])
+    y = np.concatenate((firstvals, y, lastvals))
+
+    # Convolve coefficients with padded signal
+    return np.convolve(m[::-1], y, mode="valid")
+
+
+def filter_exponential(
+    prior_data: np.ndarray,
+    new_data: np.ndarray,
+    a: int | float = 0.8,
+) -> np.ndarray:
+    """
+    Apply an exponential (IIR) smoothing filter.
+
+    Purpose
+    -------
+    - Smooth data by combining previous output with new input.
+    - Favor historical data to reduce noise.
+
+    Parameters
+    ----------
+    prior_data : np.ndarray
+        Filtered output from the previous step.
+    new_data : np.ndarray
+        New input data.
+    a : float
+        Smoothing coefficient (0 < a < 1).
+        Higher values give stronger smoothing.
+
+    Returns
+    -------
+    np.ndarray
+        Filtered output for the current step.
     """
     return a * prior_data + (1 - a) * new_data
 
 
+# Minimum number of data points required for filter_exponential
 filter_exponential.min_number_points = 2
 
 
-def filter_low_pass_fft(data: np.ndarray, cutoff_freq: int = 50, sampling_freq: int = 1000):
+def filter_low_pass_fft(
+    data: np.ndarray,
+    cutoff_freq: int = 50,
+    sampling_freq: int = 1000,
+):
     """
+    Apply a low-pass filter using the Fast Fourier Transform (FFT).
+
+    Purpose
+    -------
+    - Remove high-frequency noise from a signal.
+    - Preserve signal components below a cutoff frequency.
 
     Parameters
     ----------
-    data
-    cutoff_freq
-    sampling_freq
+    data : np.ndarray
+        Input signal.
+    cutoff_freq : int
+        Cutoff frequency (Hz).
+    sampling_freq : int
+        Sampling frequency of the signal (Hz).
 
     Returns
     -------
+    np.ndarray
+        Low-pass filtered signal.
 
+    Notes
+    -----
+    - Filtering is performed in the frequency domain.
+    - Assumes uniformly sampled data.
     """
-    # Calculate the normalized cutoff frequency
+    # Normalize cutoff frequency
     normalized_cutoff_freq = cutoff_freq / (0.5 * sampling_freq)
 
-    # Perform the Fourier transform
+    # Forward FFT
     fft = np.fft.fft(data)
 
-    # Create the frequency axis
+    # Frequency axis
     freq = np.fft.fftfreq(len(data))
 
-    # Apply the filter
-    fft_filtered = np.where(np.abs(freq) <= normalized_cutoff_freq, fft, 0)
+    # Zero out frequencies above cutoff
+    fft_filtered = np.where(
+        np.abs(freq) <= normalized_cutoff_freq,
+        fft,
+        0,
+    )
 
-    # Perform the inverse Fourier transform
+    # Inverse FFT back to time domain
     filtered_signal = np.fft.ifft(fft_filtered)
 
-    # Return the filtered signal
+    # Discard imaginary residue
     return np.real(filtered_signal)
