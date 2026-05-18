@@ -18,7 +18,8 @@ from chembot.equipment.continuous_event_handler import ContinuousEventHandlerRep
 
 from runs.launch_equipment.names import NamesPump, NamesValves, NamesSensors, NamesLEDColors, NamesEquipment
 
-
+# Define DynamicProfile class. It's properties correspond to the columns of the dynamics profile 
+# (currently includes time, bath temp, light intensity, pump 1 flowrate, pump 2 flowrate, pump 3 flowrate)
 class DynamicProfile:
     def __init__(self, profile: np.ndarray):
         self.profile = profile
@@ -53,12 +54,14 @@ class DynamicProfile:
         return np.trapz(x=t, y=flow_rate)
 
 
+# Load in dynamic profile data. Change filename to match what you have
 def load_profiles() -> DynamicProfile:
     # t, temp, light, Q1, Q2, Qfl
     data = np.loadtxt(r"AB_replicating_DW2_14_profiles.csv", delimiter=",")
     return DynamicProfile(data)
 
-
+# Defines a job for flow in the system. Takes total flow volume, pump flowrate, valve name, pump name, and duration of flow as inputs.
+# If no duration is given, it will just run for 100 ms
 def job_flow(volume: Quantity, flow_rate: Quantity, valve: str, pump: str, duration: bool = True) -> JobSequence:
     job = JobSequence(
         [
@@ -101,7 +104,8 @@ def job_flow(volume: Quantity, flow_rate: Quantity, valve: str, pump: str, durat
 
     return job
 
-
+# Defines job for filling syringe. Takes total fill volume, flowrate, valve name, and pump name as inputs.
+# Fills with slightly extra volume and then pumps back into vial
 def job_fill_syringe(volume: Quantity, flow_rate: Quantity, valve: str, pump: str) -> JobSequence:
     extra_volume = 0.5 * Unit.ml
     volume = volume + extra_volume
@@ -138,7 +142,7 @@ def job_fill_syringe(volume: Quantity, flow_rate: Quantity, valve: str, pump: st
         ]
     )
 
-
+# Same thing as above, but for multiple pumps
 def job_fill_syringe_multiple(
         volume: Iterable[Quantity],
         flow_rate: Iterable[Quantity],
@@ -149,7 +153,7 @@ def job_fill_syringe_multiple(
         [job_fill_syringe(vol, flow, val, p) for vol, flow, val, p in zip(volume, flow_rate, valves, pumps)],
     )
 
-
+# Same thing as above, but for multiple pumps
 def job_flow_syringe_multiple(
         volume: Iterable[Quantity],
         flow_rate: Iterable[Quantity],
@@ -163,7 +167,8 @@ def job_flow_syringe_multiple(
         delay=delay  # to allow syringes to stabilize
     )
 
-
+# Defines a job that will run the system at a steady state. The steady state is at the first point of the dynamic profile.
+# Do this at the start and end of every run to flush anything in the tubes as well as establish a baseline NMR/IR 
 def steady_state(profile: DynamicProfile):
     Q1 = float(profile.Q1[0]) * Unit("ml") * 7 * 6  # (3*7min) * flowrate(ml/min) = ml|7min residence time
     Q2 = float(profile.Q2[0]) * Unit("ml") * 7 * 6
@@ -356,7 +361,7 @@ def job_segment(profile: DynamicProfile, start: int, end: int):
     )
 
 
-def job_segment2(profile: DynamicProfile, start: int, end: int):
+def job_segment_start(profile: DynamicProfile, start: int, end: int):
     t = profile.time[start: end]
     t = t - t[0]
     temp = profile.temp[start: end]
@@ -472,7 +477,9 @@ def job_segment2(profile: DynamicProfile, start: int, end: int):
         ]
     )
 
-
+# Overall job. Loads in the dynamic profile. You need to input refill indices that you got from dynamic calc.
+# It turns on ATIR and NMR, runs steady state, runs job segments, then runs steady state before turning everything off.
+# You will need to add/remove job segment lines based on the number of refill indices
 def job_droplets() -> JobSequence:
     profiles = load_profiles()
     index_refill = [675, 1349, 2022]  # [112.54224559 224.91776192 337.126549]
@@ -503,10 +510,10 @@ def job_droplets() -> JobSequence:
             ),
 
             ## segment pre
-            # steady_state(profiles),
+            steady_state(profiles),
 
             ## segment
-            job_segment2(profiles, start=0, end=index_refill[0]),  # 0-675
+            job_segment(profiles, start=0, end=index_refill[0]),  # 0-675
             job_segment(profiles, start=index_refill[0], end=index_refill[1]),  # 675-1349
             job_segment(profiles, start=index_refill[1], end=index_refill[2]),  # 1349-2022
             job_segment(profiles, start=index_refill[2], end=-1),  # 2022- -1

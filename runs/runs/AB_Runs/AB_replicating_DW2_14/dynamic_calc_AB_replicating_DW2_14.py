@@ -69,7 +69,7 @@ def main():
 
     Qtotal = reactor_volume / (res_time * U.min)  # ml/min
     Qfl = Qtotal/2
-    Q2 = (cat_ratio * Qtotal).to("mL/min")
+    Q2 = (cat_ratio * Qtotal / 0.0002).to("mL/min")
     Q1 = ((0.0002-(2*cat_ratio)) * Q2 / 2 /cat_ratio).to("ml/min")
 
     fig = go.Figure()
@@ -99,7 +99,7 @@ def main():
               np.trapz(x=t[refill_indices[i - 1]:refill_indices[i]], y=Qfl.v[refill_indices[i - 1]:refill_indices[i]])
               )
 
-    data = np.column_stack((t, temp, light, Q1.v, Q2.v, Qfl.v))
+    data = np.column_stack((t, temp, light, Q1.v, Q2.v, Qfl.v, res_time, cat_ratio))
     np.savetxt("AB_replicating_DW2_14_profiles.csv", data, delimiter=",")
 
 
